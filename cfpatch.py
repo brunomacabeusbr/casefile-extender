@@ -27,19 +27,24 @@ copy_modules = [
     ('maltego-core-platform', 'com-paterva-maltego-typing')     # for com.paterva.maltego.typing.TypeNameValidator (needed by com-paterva-maltego-transform-manager)
 ]
 
-
-
-import os, sys, tempfile, shutil, atexit, hashlib, zipfile
+import os
+import sys
+import tempfile
+import shutil
+import atexit
+import hashlib
+import zipfile
 from subprocess import Popen, PIPE, STDOUT
 
 tool_asm = os.path.realpath(os.path.join('tools', 'jasmin.jar'))
 tool_disasm = os.path.realpath(os.path.join('tools', 'classfileanalyzer.jar'))
 assert(os.path.exists(tool_asm) and os.path.exists(tool_disasm))
 
+
 def main(maltego_zip, casefile_zip, output_zip):
     check_prerequisites()
     
-    print('')
+    print('Starting patch...')
     
     maltego_dir, casefile_dir = [tempfile.mkdtemp() for i in range(2)]
     atexit.register(lambda *args: map(shutil.rmtree, args), maltego_dir, casefile_dir)
@@ -56,15 +61,13 @@ def main(maltego_zip, casefile_zip, output_zip):
     casefile_dir = os.path.join(casefile_dir, basedir_inside_zip['casefile'])
     assert(os.path.exists(maltego_dir))
     assert(os.path.exists(casefile_dir))
-
-    print('')    
     
     for filename in remove_files:
         print('Removing %s' % filename)
         os.remove(os.path.join(casefile_dir, filename))
         
     for subsystem, modname in copy_modules:
-        print('Copying module %s (%s)' % (modname, subsystem))
+        print('Copying module %s (%s) from maltego to casefile' % (modname, subsystem))
         jarpath, xmlpath = module_paths(subsystem, modname)
         shutil.copyfile(os.path.join(maltego_dir, jarpath), os.path.join(casefile_dir, jarpath))
         shutil.copyfile(os.path.join(maltego_dir, xmlpath), os.path.join(casefile_dir, xmlpath))
@@ -94,15 +97,14 @@ def main(maltego_zip, casefile_zip, output_zip):
         os.chdir(jartemp)
         
         targetfile = get_target(patchfile, ext)
-        if not targetfile in file2jar:
+        if targetfile not in file2jar:
             print("ERROR: target file '%s' not found" % targetfile)
-            sys.exit(1)
+            exit(1)
         
         jarfile = file2jar[targetfile]
         print('found in %s' % jarfile)
         jarfile = os.path.realpath(os.path.join(casefile_dir, jarfile))
-        
-        
+
         if ext != 'java':  # .java files aren't to be patched over the original files
             # extract
             p = Popen(['jar', 'xf', jarfile, targetfile], stdout=PIPE)
@@ -123,17 +125,17 @@ def main(maltego_zip, casefile_zip, output_zip):
         
         os.chdir(origdir)
         shutil.rmtree(jartemp)
-        print('')
     
     if os.path.exists(output_zip):
         os.remove(output_zip)
     zipdir(output_zip, casefile_origdir)
     print('DONE')
-    
+
+
 def get_target(patchfile, ext):
     f = open(patchfile)
     if ext == 'diff':
-        for line in f.xreadlines():
+        for line in f:
             assert(isinstance(line, str))
             if line.startswith('+++ '):
                 return line[4:].split('\t', 2)[0]
@@ -147,10 +149,11 @@ def get_target(patchfile, ext):
         line = f.readline()
         if not line.startswith('//target-contains: '):
             print('ERROR: the first line of a java file must specify a file which is contained inside the target jar')
-            sys.exit(1)
+            exit(1)
         return line.split(' ', 2)[1].strip()
     f.close()
-    
+
+
 def apply_patch(patchfile, ext, targetfile):
     assert(isinstance(targetfile, str))
     if ext == 'diff':
@@ -161,8 +164,8 @@ def apply_patch(patchfile, ext, targetfile):
         outfile = open(outfilename, 'w')
         # disassemble
         p = Popen(['java', '-jar', tool_disasm, '-nopc', targetfile], stdout=PIPE)
-        for line in p.stdout.xreadlines():
-            outfile.write(line)
+        for line in p.stdout.readlines():
+            outfile.write(line.decode())
         outfile.close()
         assert(p.wait() == 0)
         # patch
@@ -188,7 +191,8 @@ def apply_patch(patchfile, ext, targetfile):
         assert(p.wait() == 0)
         # remove java sourcecode
         os.remove(origfilename)
-    
+
+
 def collect_jars(basedir):
     dic = {}
     olddir = os.getcwd()
@@ -207,26 +211,29 @@ def collect_jars(basedir):
                 z.close()
     os.chdir(olddir)
     return dic, ':'.join(classpath)
-    
+
+
 def module_paths(subsystem, modname):
     jarpath = os.path.join(subsystem, 'modules', modname + '.jar')
     xmlpath = os.path.join(subsystem, 'config', 'Modules', modname + '.xml')
     return jarpath, xmlpath
-    
+
+
 def checkmd5(filename, md5hex, origfilename):
-    sys.stdout.write('Verifying MD5: %s... ' % filename)
+    print('Verifying MD5: %s... ' % filename, end='')
     sys.stdout.flush()
     if md5file(filename) != md5hex:
-        sys.stdout.write('failed\n\n')
-        sys.stdout.write('WARNING: only tested with %s\n' % origfilename)
-        sys.stdout.write('(MD5: %s)\n' % md5hex)
-        sys.stdout.write('Trying anyway...\n\n')
+        print('failed!\n'
+              '  WARNING: only tested with {}\n'
+              '  (MD5: {})\n'
+              '  Trying anyway...'.format(origfilename, md5hex))
     else:
-        sys.stdout.write('ok\n')
-    
+        print('ok')
+
+
 def md5file(filename):
     h = hashlib.md5()
-    f = open(filename)
+    f = open(filename, 'rb')
     while True:
         data = f.read(2**20)
         if not data:
@@ -234,13 +241,15 @@ def md5file(filename):
         h.update(data)
     f.close()
     return h.hexdigest()
-    
+
+
 def unzip(zipfile, destdir):
     print('Unpacking %s...' % zipfile)
     p = Popen(['unzip', zipfile, '-d', destdir], stdout=PIPE)
     p.stdout.read()
     assert(p.wait() == 0)
-    
+
+
 def zipdir(zipfile, origdir):
     print('Packing %s...' % zipfile)
     zipfile = os.path.realpath(zipfile)
@@ -248,26 +257,27 @@ def zipdir(zipfile, origdir):
     p.stdout.read()
     assert(p.wait() == 0)
 
+
 def check_prerequisites():
     for cmd in ['unzip', 'zip', 'java', 'jar', 'javac']:
-        sys.stdout.write('Checking for %s... ' % cmd)
-        sys.stdout.flush()
+        print('Checking for %s... ' % cmd, end='')
         try:
             p = Popen([cmd, '-h'], stdout=PIPE, stderr=STDOUT)
             p.stdout.read()
             p.wait()
-        except OSError, e:
+        except OSError as e:
             if e.errno != 2:
                 raise e
-            sys.stdout.write('not found\n')
-            sys.exit(1)
-        sys.stdout.write('found\n')
+            print('not found\n')
+            exit(1)
+        print('found')
+
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
         print('usage: %s maltego.zip casefile.zip output.zip\n' % sys.argv[0])
         print('takes as inputs original maltego and casefile zip files')
         print('generates a custom casefile distribution into output.zip')
-        sys.exit(1)
+        exit(1)
+
     main(*sys.argv[1:])
-    
